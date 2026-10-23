@@ -1,0 +1,6 @@
+streamlit
+pandas
+requests
+rapidfuzz
+psycopg2-binary
+openpyxl
