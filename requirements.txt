@@ -2,5 +2,6 @@ streamlit
 pandas
 requests
 rapidfuzz
-psycopg2-binary
 openpyxl
+sqlalchemy
+psycopg2-binary
