@@ -94,3 +94,187 @@ with tab1:
             
             for i, firma in enumerate(hedef_firmalar):
                 eslesme = process.extractOne(firma, cari_firmalar, scorer=fuzz.token_sort_ratio)
+                
+                if eslesme and eslesme[1] >= eslesme_esigi:
+                    sonuclar.append({"Firma Adı": firma, "SGL Cari (Bulunan)": eslesme[0], "Eşleşme Skoru": round(eslesme[1], 2), "Durum": "✅ Eşleşti"})
+                else:
+                    sonuclar.append({"Firma Adı": firma, "SGL Cari (Bulunan)": "-", "Eşleşme Skoru": round(eslesme[1], 2) if eslesme else 0, "Durum": "❌ Eşleşmedi"})
+                
+                if i % 20 == 0 or i == toplam - 1:
+                    ilerleme.progress((i + 1) / toplam)
+                    
+            df_sonuc = pd.DataFrame(sonuclar)
+            st.success("Eşleştirme Tamamlandı!")
+            
+            df_eslesen = df_sonuc[df_sonuc["Durum"] == "✅ Eşleşti"]
+            df_eslesmeyen = df_sonuc[df_sonuc["Durum"] == "❌ Eşleşmedi"]
+            df_eslesmeyen_sade = df_eslesmeyen[["Firma Adı"]]
+            
+            tab_e, tab_y = st.tabs([f"✅ Eşleşenler ({len(df_eslesen)})", f"❌ Yeni Potansiyel ({len(df_eslesmeyen_sade)})"])
+            with tab_e:
+                st.dataframe(df_eslesen)
+            with tab_y:
+                st.dataframe(df_eslesmeyen_sade)
+            
+            st.markdown("### 📥 Sonuçları İndir ve Veritabanına Kaydet")
+            dl_col1, dl_col2, db_col = st.columns(3)
+            
+            with dl_col1:
+                buffer_eslesen = io.BytesIO()
+                df_eslesen.to_excel(buffer_eslesen, index=False, engine='openpyxl')
+                st.download_button("📥 Eşleşenleri İndir", data=buffer_eslesen.getvalue(), file_name="Cari_Eslesenler.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                
+            with dl_col2:
+                buffer_eslesmeyen = io.BytesIO()
+                df_eslesmeyen_sade.to_excel(buffer_eslesmeyen, index=False, engine='openpyxl')
+                st.download_button("📥 Eşleşmeyenleri İndir", data=buffer_eslesmeyen.getvalue(), file_name="Sifir_Aday_Listesi.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+            with db_col:
+                if st.button("💾 Sonuçları Supabase'e Yaz (Adım 1)"):
+                    try:
+                        engine = create_engine(SUPABASE_URL)
+                        df_sonuc.to_sql("cari_eslesmeler", engine, if_exists='append', index=False)
+                        st.success("Tüm eşleşme verileri Supabase'e kaydedildi!")
+                    except Exception as e:
+                        st.error(f"Veritabanı Hatası: {e}")
+
+# --- 2. ADIM: WEB BULUCU VE KILL SWITCH ---
+with tab2:
+    st.markdown("Global ve Yerel alıcıların web sitelerini **Apollo Formatında (Domain)** bulun.")
+    
+    if 'kurtarilan_veriler' not in st.session_state:
+        st.session_state.kurtarilan_veriler = []
+        
+    hedef_ulke = st.selectbox("🌍 Hedef Ülke", ["Amerika Birleşik Devletleri (US)", "Birleşik Krallık (UK)", "Almanya (DE)", "Türkiye (TR)", "Global (Ülke Belirtme)"])
+    web_file = st.file_uploader("Sıfır Aday Listesi (Excel/CSV) Yükleyin", key="web")
+    
+    if web_file:
+        df_web = pd.read_excel(web_file) if web_file.name.endswith('.xlsx') else pd.read_csv(web_file)
+        sutun = st.selectbox("Web Taraması İçin Firma Adı Sütunu:", df_web.columns)
+        
+        toplam_satir = len(df_web)
+        st.warning(f"Toplam dosya boyutu: **{toplam_satir} satır**. Sunucu kesintilerini önlemek için maksimum 1000'erli gruplar halinde tarama yapmanız önerilir.")
+        
+        col_bas, col_bit = st.columns(2)
+        with col_bas:
+            baslangic = st.number_input("Başlangıç Satırı:", min_value=0, max_value=toplam_satir-1, value=0, step=1000)
+        with col_bit:
+            bitis = st.number_input("Bitiş Satırı:", min_value=1, max_value=toplam_satir, value=min(1000, toplam_satir), step=1000)
+            
+        islem_miktari = bitis - baslangic
+        onay = st.checkbox(f"Seçili aralığı onaylıyorum (Maksimum {islem_miktari} kredi harcanabilir).")
+        
+        if 'iptal_edildi' not in st.session_state:
+            st.session_state.iptal_edildi = False
+
+        colA, colB = st.columns([1, 1])
+        ulke_kodu = hedef_ulke.split("(")[-1].replace(")", "")
+        buton_metni = "🚀 Apollo İçin Web Taramayı Başlat" if ulke_kodu == "Ülke Belirtme" else f"🚀 Apollo İçin Web Taramayı Başlat ({ulke_kodu})"
+        
+        with colA:
+            baslat = st.button(buton_metni)
+        with colB:
+            durdur = st.button("🛑 Acil Durdur (Kill Switch)")
+
+        if durdur:
+            st.session_state.iptal_edildi = True
+            st.error("🚨 İşlem acil olarak durduruldu! Kalan kredileriniz güvende.")
+
+        if baslat:
+            if not onay:
+                st.error("🚨 Lütfen başlamadan önce onay kutusunu işaretleyin!")
+            elif islem_miktari <= 0:
+                st.error("🚨 Bitiş satırı, başlangıç satırından büyük olmalıdır!")
+            else:
+                st.session_state.iptal_edildi = False
+                st.session_state.kurtarilan_veriler = []
+                
+                durum_metni = st.empty()
+                istatistik_metni = st.empty()
+                ilerleme = st.progress(0)
+                
+                df_islem = df_web.iloc[baslangic:bitis]
+                bellek_verisi = bellek_yukle()
+                basarili_bulunan = 0
+                kurtarilan_kredi = 0
+                
+                for index, (orijinal_index, row) in enumerate(df_islem.iterrows()):
+                    if getattr(st.session_state, 'iptal_edildi', False):
+                        st.warning("🛑 Tarama kesildi. Bulunan veriler aşağıda.")
+                        break
+                    
+                    firma_adi = str(row[sutun])
+                    arama_terimi = f"{firma_adi} company website"
+                    if ulke_kodu != "Ülke Belirtme":
+                        arama_terimi += f" {ulke_kodu}"
+                    
+                    if arama_terimi in bellek_verisi:
+                        domain = bellek_verisi[arama_terimi]
+                        kurtarilan_kredi += 1
+                        kaynak_bilgisi = "🗂️ Bellekten (0 Kredi)"
+                    else:
+                        url = "https://google.serper.dev/search"
+                        payload = json.dumps({"q": arama_terimi, "num": 5})
+                        headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
+                        
+                        domain = "Bulunamadı"
+                        try:
+                            response = requests.post(url, headers=headers, data=payload, timeout=5)
+                            data = response.json()
+                            organic_results = data.get("organic", [])
+                            
+                            for sonuc in organic_results:
+                                tam_url = sonuc.get("link", "")
+                                if tam_url:
+                                    parsed_url = urllib.parse.urlparse(tam_url)
+                                    net_domain = parsed_url.netloc.lower()
+                                    if net_domain.startswith("www."):
+                                        net_domain = net_domain[4:]
+                                        
+                                    if not any(yasakli in net_domain for yasakli in YASAKLI_SITELER):
+                                        domain = net_domain
+                                        break
+                        except:
+                            domain = "Bağlantı Hatası"
+                        
+                        bellek_verisi[arama_terimi] = domain
+                        bellek_kaydet(bellek_verisi)
+                        kaynak_bilgisi = "🌐 API'den (1 Kredi)"
+                    
+                    if domain not in ["Bulunamadı", "Bağlantı Hatası"]:
+                        basarili_bulunan += 1
+                    
+                    st.session_state.kurtarilan_veriler.append({
+                        "Firma Adı": firma_adi, 
+                        "Bulunan Web Sitesi": domain,
+                        "Veri Kaynağı": kaynak_bilgisi.split(" ")[0]
+                    })
+                    
+                    guncel_basari = round((basarili_bulunan / (index + 1)) * 100, 1)
+                    ilerleme.progress((index + 1) / islem_miktari)
+                    durum_metni.info(f"⏳ İşleniyor: {index + 1} / {islem_miktari} | Şu an: {firma_adi} | {kaynak_bilgisi}")
+                    istatistik_metni.success(f"🎯 **Anlık Başarı:** %{guncel_basari} | 💰 **Tasarruf Edilen Kredi:** {kurtarilan_kredi}")
+                    
+                if getattr(st.session_state, 'iptal_edildi', False) == False:
+                    final_basari = round((basarili_bulunan / islem_miktari) * 100, 1)
+                    durum_metni.success(f"✅ Tarama bitti! Nihai Başarı Oranı: **%{final_basari}** | Kurtarılan Kredi: **{kurtarilan_kredi}**")
+
+        if len(st.session_state.kurtarilan_veriler) > 0:
+            df_sonuc_web = pd.DataFrame(st.session_state.kurtarilan_veriler)
+            st.dataframe(df_sonuc_web)
+            
+            dl_col, db_col = st.columns(2)
+            
+            with dl_col:
+                buffer_web = io.BytesIO()
+                df_sonuc_web.to_excel(buffer_web, index=False, engine='openpyxl')
+                st.download_button(label="📥 Bulunan Web Sitelerini İndir (Excel)", data=buffer_web.getvalue(), file_name="Firma_Web_Siteleri.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            
+            with db_col:
+                if st.button("💾 Sonuçları Supabase'e Yaz (Adım 2)"):
+                    try:
+                        engine = create_engine(SUPABASE_URL)
+                        df_sonuc_web.to_sql("bulunan_web_siteleri", engine, if_exists='append', index=False)
+                        st.success("Tüm web sitesi verileri Supabase'e başarıyla eklendi!")
+                    except Exception as e:
+                        st.error(f"Veritabanı Hatası: {e}")
