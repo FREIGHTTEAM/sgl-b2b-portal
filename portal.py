@@ -2,9 +2,13 @@ import streamlit as st
 import pandas as pd
 import requests
 from rapidfuzz import process, fuzz
-import urllib.parse
 import time
 import io
+import json
+
+# --- SABİT API ANAHTARI (SİSTEME GÖMÜLÜ) ---
+# Kendi Serper API anahtarınızı aşağıdaki tırnak işaretlerinin içine yapıştırın.
+SERPER_API_KEY = "BURAYA_YAPIŞTIRIN"
 
 # --- SAYFA YAPILANDIRMASI ---
 st.set_page_config(page_title="SGL B2B Operasyon Portalı", layout="wide")
@@ -90,7 +94,6 @@ with tab1:
             df_sonuc = pd.DataFrame(sonuclar)
             st.success("Eşleştirme Tamamlandı!")
             
-            # Verileri ikiye böl
             df_eslesen = df_sonuc[df_sonuc["Durum"] == "✅ Eşleşti"]
             df_eslesmeyen = df_sonuc[df_sonuc["Durum"] == "❌ Eşleşmedi"]
             df_eslesmeyen_sade = df_eslesmeyen[["Firma Adı"]]
@@ -128,10 +131,17 @@ with tab1:
 with tab2:
     st.markdown("Global ve Yerel alıcıların web sitelerini **Apollo Formatında (Domain)** bulun.")
     
-    api_key = st.text_input("🔑 Serper API Anahtarı", type="password")
+    hedef_ulke = st.selectbox("🌍 Hedef Ülke", [
+        "Amerika Birleşik Devletleri (US)", 
+        "Birleşik Krallık (UK)", 
+        "Almanya (DE)", 
+        "Türkiye (TR)", 
+        "Global (Ülke Belirtme)"
+    ])
+    
     web_file = st.file_uploader("Sıfır Aday Listesi (Excel/CSV) Yükleyin", key="web")
     
-    if web_file and api_key:
+    if web_file:
         df_web = pd.read_excel(web_file) if web_file.name.endswith('.xlsx') else pd.read_csv(web_file)
         sutun = st.selectbox("Web Taraması İçin Firma Adı Sütunu:", df_web.columns)
         
@@ -145,8 +155,11 @@ with tab2:
 
         colA, colB = st.columns([1, 1])
         
+        ulke_kodu = hedef_ulke.split("(")[-1].replace(")", "")
+        buton_metni = f"🚀 Apollo İçin Web Taramayı Başlat" if ulke_kodu == "Ülke Belirtme" else f"🚀 Apollo İçin Web Taramayı Başlat ({ulke_kodu})"
+        
         with colA:
-            baslat = st.button("🚀 Apollo İçin Web Taramayı Başlat")
+            baslat = st.button(buton_metni)
         with colB:
             durdur = st.button("🛑 Acil Durdur (Kill Switch)")
 
@@ -157,19 +170,60 @@ with tab2:
         if baslat:
             if not onay:
                 st.error("🚨 Lütfen başlamadan önce kredi onay kutusunu işaretleyin!")
+            elif SERPER_API_KEY == "BURAYA_YAPIŞTIRIN":
+                st.error("🚨 Lütfen portal.py dosyasının en üstündeki SERPER_API_KEY değişkenine kendi API anahtarınızı ekleyin!")
             else:
                 st.session_state.iptal_edildi = False
                 st.info("Tarama başlatılıyor...")
                 
                 ilerleme = st.progress(0)
+                tarama_sonuclari = []
                 
                 for i in range(toplam_satir):
                     if getattr(st.session_state, 'iptal_edildi', False):
-                        st.warning("🛑 Tarama kullanıcı tarafından kesildi. Tamamlanan verileri indirebilirsiniz.")
+                        st.warning("🛑 Tarama kullanıcı tarafından kesildi. Şu ana kadar bulunan verileri aşağıdan indirebilirsiniz.")
                         break
                     
-                    time.sleep(0.1) 
+                    firma_adi = str(df_web.iloc[i][sutun])
+                    arama_terimi = f"{firma_adi} company website"
+                    if ulke_kodu != "Ülke Belirtme":
+                        arama_terimi += f" {ulke_kodu}"
+                    
+                    # GERÇEK SERPER API BAĞLANTISI
+                    url = "https://google.serper.dev/search"
+                    payload = json.dumps({"q": arama_terimi, "num": 1})
+                    headers = {
+                        'X-API-KEY': SERPER_API_KEY,
+                        'Content-Type': 'application/json'
+                    }
+                    
+                    try:
+                        response = requests.post(url, headers=headers, data=payload)
+                        data = response.json()
+                        domain = data.get("organic", [])[0].get("link", "Bulunamadı")
+                    except:
+                        domain = "Bağlantı Hatası"
+                    
+                    tarama_sonuclari.append({
+                        "Firma Adı": firma_adi,
+                        "Bulunan Web Sitesi": domain
+                    })
+                    
                     ilerleme.progress((i + 1) / toplam_satir)
                     
                 if getattr(st.session_state, 'iptal_edildi', False) == False:
                     st.success("Tarama başarıyla tamamlandı!")
+                
+                # SONUÇLARI GÖSTER VE İNDİR (İptal edilse bile o ana kadar olan verileri kurtarır)
+                if tarama_sonuclari:
+                    df_sonuc_web = pd.DataFrame(tarama_sonuclari)
+                    st.dataframe(df_sonuc_web)
+                    
+                    buffer_web = io.BytesIO()
+                    df_sonuc_web.to_excel(buffer_web, index=False, engine='openpyxl')
+                    st.download_button(
+                        label="📥 Bulunan Web Sitelerini İndir (Excel)",
+                        data=buffer_web.getvalue(),
+                        file_name="Firma_Web_Siteleri.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
