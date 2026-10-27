@@ -4,6 +4,7 @@ import requests
 from rapidfuzz import process, fuzz
 import urllib.parse
 import time
+import io
 
 # --- SAYFA YAPILANDIRMASI ---
 st.set_page_config(page_title="SGL B2B Operasyon Portalı", layout="wide")
@@ -92,36 +93,35 @@ with tab1:
             # Verileri ikiye böl
             df_eslesen = df_sonuc[df_sonuc["Durum"] == "✅ Eşleşti"]
             df_eslesmeyen = df_sonuc[df_sonuc["Durum"] == "❌ Eşleşmedi"]
-            
-            # Eşleşmeyenler için sadece "Firma Adı" sütununu bırak
             df_eslesmeyen_sade = df_eslesmeyen[["Firma Adı"]]
             
-            # Ekranda sekmeli gösterim
             tab_e, tab_y = st.tabs([f"✅ Eşleşenler ({len(df_eslesen)})", f"❌ Yeni Potansiyel ({len(df_eslesmeyen_sade)})"])
             with tab_e:
                 st.dataframe(df_eslesen)
             with tab_y:
                 st.dataframe(df_eslesmeyen_sade)
             
-            st.markdown("### 📥 Sonuçları İndir")
+            st.markdown("### 📥 Sonuçları İndir (Excel Formatında)")
             dl_col1, dl_col2 = st.columns(2)
             
             with dl_col1:
-                csv_eslesen = df_eslesen.to_csv(index=False).encode('utf-8')
+                buffer_eslesen = io.BytesIO()
+                df_eslesen.to_excel(buffer_eslesen, index=False, engine='openpyxl')
                 st.download_button(
-                    label="📥 Eşleşen Carileri İndir (Detaylı)",
-                    data=csv_eslesen,
-                    file_name="Cari_Eslesenler.csv",
-                    mime="text/csv",
+                    label="📥 Eşleşen Carileri İndir (Detaylı Excel)",
+                    data=buffer_eslesen.getvalue(),
+                    file_name="Cari_Eslesenler.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
                 
             with dl_col2:
-                csv_eslesmeyen = df_eslesmeyen_sade.to_csv(index=False).encode('utf-8')
+                buffer_eslesmeyen = io.BytesIO()
+                df_eslesmeyen_sade.to_excel(buffer_eslesmeyen, index=False, engine='openpyxl')
                 st.download_button(
-                    label="📥 Eşleşmeyenleri İndir (Sadece Firma Adı)",
-                    data=csv_eslesmeyen,
-                    file_name="Sifir_Aday_Listesi.csv",
-                    mime="text/csv",
+                    label="📥 Eşleşmeyenleri İndir (Sadece Firma Adı - Excel)",
+                    data=buffer_eslesmeyen.getvalue(),
+                    file_name="Sifir_Aday_Listesi.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
 # --- 2. ADIM: WEB BULUCU VE KILL SWITCH ---
