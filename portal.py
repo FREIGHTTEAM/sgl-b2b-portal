@@ -6,10 +6,23 @@ import time
 import io
 import json
 import os
+import urllib.parse
+from sqlalchemy import create_engine
 
-# --- SABİT API ANAHTARI (SİSTEME GÖMÜLÜ) ---
+# --- SABİT API ANAHTARI VE AYARLAR ---
 SERPER_API_KEY = "a73b378f102b03feea358827df0eb587a7a1b7c6"
 CACHE_DOSYASI = "domain_cache.json"
+
+# SUPABASE BAĞLANTISI (Şifreniz entegre edildi)
+SUPABASE_URL = "postgresql://postgres.sfuauyfobwzhtydyfdnh:SglPortal2026!@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
+
+# İstenmeyen rehber ve sosyal medya siteleri
+YASAKLI_SITELER = [
+    "linkedin.com", "facebook.com", "instagram.com", "twitter.com", "x.com", "youtube.com", 
+    "zoominfo.com", "dnb.com", "bloomberg.com", "crunchbase.com", "apollo.io", 
+    "glassdoor.com", "yellowpages.com", "yelp.com", "kompass.com", "tr.foursquare.com", 
+    "google.com", "mapquest.com", "bbb.org", "chamberofcommerce.com", "yahoo.com"
+]
 
 st.set_page_config(page_title="SGL B2B Operasyon Portalı", layout="wide")
 
@@ -81,168 +94,3 @@ with tab1:
             
             for i, firma in enumerate(hedef_firmalar):
                 eslesme = process.extractOne(firma, cari_firmalar, scorer=fuzz.token_sort_ratio)
-                
-                if eslesme and eslesme[1] >= eslesme_esigi:
-                    sonuclar.append({"Firma Adı": firma, "SGL Cari (Bulunan)": eslesme[0], "Eşleşme Skoru": round(eslesme[1], 2), "Durum": "✅ Eşleşti"})
-                else:
-                    sonuclar.append({"Firma Adı": firma, "SGL Cari (Bulunan)": "-", "Eşleşme Skoru": round(eslesme[1], 2) if eslesme else 0, "Durum": "❌ Eşleşmedi"})
-                
-                if i % 20 == 0 or i == toplam - 1:
-                    ilerleme.progress((i + 1) / toplam)
-                    
-            df_sonuc = pd.DataFrame(sonuclar)
-            st.success("Eşleştirme Tamamlandı!")
-            
-            df_eslesen = df_sonuc[df_sonuc["Durum"] == "✅ Eşleşti"]
-            df_eslesmeyen = df_sonuc[df_sonuc["Durum"] == "❌ Eşleşmedi"]
-            df_eslesmeyen_sade = df_eslesmeyen[["Firma Adı"]]
-            
-            tab_e, tab_y = st.tabs([f"✅ Eşleşenler ({len(df_eslesen)})", f"❌ Yeni Potansiyel ({len(df_eslesmeyen_sade)})"])
-            with tab_e:
-                st.dataframe(df_eslesen)
-            with tab_y:
-                st.dataframe(df_eslesmeyen_sade)
-            
-            st.markdown("### 📥 Sonuçları İndir (Excel Formatında)")
-            dl_col1, dl_col2 = st.columns(2)
-            
-            with dl_col1:
-                buffer_eslesen = io.BytesIO()
-                df_eslesen.to_excel(buffer_eslesen, index=False, engine='openpyxl')
-                st.download_button("📥 Eşleşen Carileri İndir (Detaylı Excel)", data=buffer_eslesen.getvalue(), file_name="Cari_Eslesenler.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                
-            with dl_col2:
-                buffer_eslesmeyen = io.BytesIO()
-                df_eslesmeyen_sade.to_excel(buffer_eslesmeyen, index=False, engine='openpyxl')
-                st.download_button("📥 Eşleşmeyenleri İndir (Sadece Firma Adı - Excel)", data=buffer_eslesmeyen.getvalue(), file_name="Sifir_Aday_Listesi.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-# --- 2. ADIM: WEB BULUCU VE KILL SWITCH ---
-with tab2:
-    st.markdown("Global ve Yerel alıcıların web sitelerini **Apollo Formatında (Domain)** bulun.")
-    
-    if 'kurtarilan_veriler' not in st.session_state:
-        st.session_state.kurtarilan_veriler = []
-        
-    hedef_ulke = st.selectbox("🌍 Hedef Ülke", ["Amerika Birleşik Devletleri (US)", "Birleşik Krallık (UK)", "Almanya (DE)", "Türkiye (TR)", "Global (Ülke Belirtme)"])
-    web_file = st.file_uploader("Sıfır Aday Listesi (Excel/CSV) Yükleyin", key="web")
-    
-    if len(st.session_state.kurtarilan_veriler) > 0:
-        st.warning(f"⚠️ Önceki oturumdan kurtarılan {len(st.session_state.kurtarilan_veriler)} adet firma kaydı bulundu.")
-        df_kurtarilan = pd.DataFrame(st.session_state.kurtarilan_veriler)
-        buffer_kurtarilan = io.BytesIO()
-        df_kurtarilan.to_excel(buffer_kurtarilan, index=False, engine='openpyxl')
-        st.download_button(label="📥 Yarıda Kalan Tarama Verilerini İndir (Excel)", data=buffer_kurtarilan.getvalue(), file_name="Kurtarilan_Firma_Siteleri.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    if web_file:
-        df_web = pd.read_excel(web_file) if web_file.name.endswith('.xlsx') else pd.read_csv(web_file)
-        sutun = st.selectbox("Web Taraması İçin Firma Adı Sütunu:", df_web.columns)
-        
-        toplam_satir = len(df_web)
-        st.warning(f"Toplam dosya boyutu: **{toplam_satir} satır**. Sunucu kesintilerini önlemek için maksimum 1000'erli gruplar halinde tarama yapmanız önerilir.")
-        
-        col_bas, col_bit = st.columns(2)
-        with col_bas:
-            baslangic = st.number_input("Başlangıç Satırı:", min_value=0, max_value=toplam_satir-1, value=0, step=1000)
-        with col_bit:
-            bitis = st.number_input("Bitiş Satırı:", min_value=1, max_value=toplam_satir, value=min(1000, toplam_satir), step=1000)
-            
-        islem_miktari = bitis - baslangic
-        
-        onay = st.checkbox(f"Seçili aralığı onaylıyorum (Maksimum {islem_miktari} kredi harcanabilir).")
-        
-        if 'iptal_edildi' not in st.session_state:
-            st.session_state.iptal_edildi = False
-
-        colA, colB = st.columns([1, 1])
-        
-        ulke_kodu = hedef_ulke.split("(")[-1].replace(")", "")
-        buton_metni = "🚀 Apollo İçin Web Taramayı Başlat" if ulke_kodu == "Ülke Belirtme" else f"🚀 Apollo İçin Web Taramayı Başlat ({ulke_kodu})"
-        
-        with colA:
-            baslat = st.button(buton_metni)
-        with colB:
-            durdur = st.button("🛑 Acil Durdur (Kill Switch)")
-
-        if durdur:
-            st.session_state.iptal_edildi = True
-            st.error("🚨 İşlem acil olarak durduruldu! Kalan kredileriniz güvende.")
-
-        if baslat:
-            if not onay:
-                st.error("🚨 Lütfen başlamadan önce onay kutusunu işaretleyin!")
-            elif islem_miktari <= 0:
-                st.error("🚨 Bitiş satırı, başlangıç satırından büyük olmalıdır!")
-            else:
-                st.session_state.iptal_edildi = False
-                st.session_state.kurtarilan_veriler = []
-                
-                durum_metni = st.empty()
-                istatistik_metni = st.empty()
-                ilerleme = st.progress(0)
-                
-                df_islem = df_web.iloc[baslangic:bitis]
-                
-                # Belleği ve istatistikleri yükle
-                bellek_verisi = bellek_yukle()
-                basarili_bulunan = 0
-                kurtarilan_kredi = 0
-                
-                for index, (orijinal_index, row) in enumerate(df_islem.iterrows()):
-                    if getattr(st.session_state, 'iptal_edildi', False):
-                        st.warning("🛑 Tarama kullanıcı tarafından kesildi. Şu ana kadar bulunan verileri indirebilirsiniz.")
-                        break
-                    
-                    firma_adi = str(row[sutun])
-                    arama_terimi = f"{firma_adi} company website"
-                    if ulke_kodu != "Ülke Belirtme":
-                        arama_terimi += f" {ulke_kodu}"
-                    
-                    # BELLEK KONTROLÜ (API'YE GİTMEDEN ÖNCE)
-                    if arama_terimi in bellek_verisi:
-                        domain = bellek_verisi[arama_terimi]
-                        kurtarilan_kredi += 1
-                        kaynak_bilgisi = "🗂️ Bellekten Alındı (0 Kredi)"
-                    else:
-                        url = "https://google.serper.dev/search"
-                        payload = json.dumps({"q": arama_terimi, "num": 1})
-                        headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
-                        
-                        try:
-                            response = requests.post(url, headers=headers, data=payload, timeout=5)
-                            data = response.json()
-                            domain = data.get("organic", [])[0].get("link", "Bulunamadı")
-                        except:
-                            domain = "Bağlantı Hatası"
-                        
-                        # YENİ VERİYİ BELLEĞE KAYDET
-                        bellek_verisi[arama_terimi] = domain
-                        bellek_kaydet(bellek_verisi)
-                        kaynak_bilgisi = "🌐 API'den Bulundu (1 Kredi)"
-                    
-                    # BAŞARI ORANI HESAPLAMA İÇİN
-                    if domain not in ["Bulunamadı", "Bağlantı Hatası"]:
-                        basarili_bulunan += 1
-                    
-                    st.session_state.kurtarilan_veriler.append({
-                        "Firma Adı": firma_adi, 
-                        "Bulunan Web Sitesi": domain,
-                        "Veri Kaynağı": kaynak_bilgisi.split(" ")[0] # Sadece emojiyi rapora ekler
-                    })
-                    
-                    guncel_basari = round((basarili_bulunan / (index + 1)) * 100, 1)
-                    
-                    ilerleme.progress((index + 1) / islem_miktari)
-                    durum_metni.info(f"⏳ İşleniyor: {index + 1} / {islem_miktari} | Şu an: {firma_adi} | {kaynak_bilgisi}")
-                    istatistik_metni.success(f"🎯 **Anlık Başarı Oranı:** %{guncel_basari} | 💰 **Tasarruf Edilen Kredi:** {kurtarilan_kredi}")
-                    
-                if getattr(st.session_state, 'iptal_edildi', False) == False:
-                    final_basari = round((basarili_bulunan / islem_miktari) * 100, 1)
-                    durum_metni.success(f"✅ {baslangic}-{bitis} arası tarama bitti! Nihai Başarı Oranı: **%{final_basari}** | Kurtarılan Kredi: **{kurtarilan_kredi}**")
-                
-                if st.session_state.kurtarilan_veriler:
-                    df_sonuc_web = pd.DataFrame(st.session_state.kurtarilan_veriler)
-                    st.dataframe(df_sonuc_web)
-                    
-                    buffer_web = io.BytesIO()
-                    df_sonuc_web.to_excel(buffer_web, index=False, engine='openpyxl')
-                    st.download_button(label="📥 Bulunan Web Sitelerini İndir (Excel)", data=buffer_web.getvalue(), file_name=f"Firma_Web_Siteleri_{baslangic}_{bitis}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
